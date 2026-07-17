@@ -24,6 +24,7 @@ import coil.compose.AsyncImage
  * Top-level gallery screen: shows a grid of thumbnails, and swaps to a
  * fullscreen pager when an item is tapped.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreen() {
     val context = LocalContext.current
