@@ -53,7 +53,7 @@ fun GalleryPermissionGate() {
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (hasPermission) {
-            GalleryScreen()
+            GalleryApp()
         } else {
             Text("Waiting for media permission…")
         }

@@ -13,7 +13,21 @@ data class MediaItem(
     val uri: Uri,
     val isVideo: Boolean,
     val dateAdded: Long,
-    val displayName: String
+    val displayName: String,
+    val bucketId: String,
+    val bucketName: String
+)
+
+/**
+ * Represents a device folder/album (e.g. "Camera", "Screenshots", "WhatsApp Images"),
+ * grouping together all MediaItems that share the same bucket.
+ */
+data class MediaFolder(
+    val bucketId: String,
+    val name: String,
+    val coverUri: Uri,
+    val itemCount: Int,
+    val items: List<MediaItem>
 )
 
 /**
@@ -36,7 +50,9 @@ object MediaRepository {
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DATE_ADDED,
-            MediaStore.Images.Media.DISPLAY_NAME
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.BUCKET_ID,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME
         )
         val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
 
@@ -44,6 +60,8 @@ object MediaRepository {
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
+            val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
@@ -54,7 +72,9 @@ object MediaRepository {
                         uri = uri,
                         isVideo = false,
                         dateAdded = cursor.getLong(dateCol),
-                        displayName = cursor.getString(nameCol) ?: ""
+                        displayName = cursor.getString(nameCol) ?: "",
+                        bucketId = cursor.getString(bucketIdCol) ?: "unknown",
+                        bucketName = cursor.getString(bucketNameCol) ?: "Unknown"
                     )
                 )
             }
@@ -68,7 +88,9 @@ object MediaRepository {
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DATE_ADDED,
-            MediaStore.Video.Media.DISPLAY_NAME
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.BUCKET_ID,
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME
         )
         val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
 
@@ -76,6 +98,8 @@ object MediaRepository {
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID)
+            val bucketNameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
@@ -86,11 +110,32 @@ object MediaRepository {
                         uri = uri,
                         isVideo = true,
                         dateAdded = cursor.getLong(dateCol),
-                        displayName = cursor.getString(nameCol) ?: ""
+                        displayName = cursor.getString(nameCol) ?: "",
+                        bucketId = cursor.getString(bucketIdCol) ?: "unknown",
+                        bucketName = cursor.getString(bucketNameCol) ?: "Unknown"
                     )
                 )
             }
         }
         return items
     }
+}
+
+/**
+ * Groups a flat media list into folders (albums), each sorted newest-first,
+ * with the folders themselves ordered by their most recent item.
+ */
+fun List<MediaItem>.toFolders(): List<MediaFolder> {
+    return this.groupBy { it.bucketId }
+        .map { (bucketId, groupItems) ->
+            val sorted = groupItems.sortedByDescending { it.dateAdded }
+            MediaFolder(
+                bucketId = bucketId,
+                name = sorted.first().bucketName,
+                coverUri = sorted.first().uri,
+                itemCount = sorted.size,
+                items = sorted
+            )
+        }
+        .sortedByDescending { it.items.first().dateAdded }
 }
