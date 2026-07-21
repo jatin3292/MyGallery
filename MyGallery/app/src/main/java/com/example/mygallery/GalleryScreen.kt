@@ -1,5 +1,6 @@
 package com.example.mygallery
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -10,13 +11,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -34,15 +40,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
 
 /**
  * Root composable owning all top-level app state: the media list, the
- * All/Folders tabs, the currently open folder (if any), multi-select state,
- * and the fullscreen viewer.
+ * All/Folders tabs (swipeable), the currently open folder (if any),
+ * media-type filtering, multi-select state, theme toggle, and the
+ * fullscreen viewer.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun GalleryApp() {
+fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
     val context = LocalContext.current
 
     var allMedia by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
@@ -63,10 +71,24 @@ fun GalleryApp() {
         reloadTrigger++
     }
 
-    val folders = remember(allMedia) { allMedia.toFolders() }
+    // Media type filter (Images / Videos), applied everywhere below.
+    var showImages by remember { mutableStateOf(true) }
+    var showVideos by remember { mutableStateOf(true) }
+    val filteredMedia = remember(allMedia, showImages, showVideos) {
+        allMedia.filter { (it.isVideo && showVideos) || (!it.isVideo && showImages) }
+    }
 
-    var selectedTab by remember { mutableStateOf(0) } // 0 = All, 1 = Folders
-    var currentFolder by remember { mutableStateOf<MediaFolder?>(null) }
+    val folders = remember(filteredMedia) { filteredMedia.toFolders() }
+
+    // Bottom tab / swipe state — page 0 = All, page 1 = Folders.
+    val tabPagerState = rememberPagerState(initialPage = 0) { 2 }
+    val coroutineScope = rememberCoroutineScope()
+
+    // Storing just the id (not the whole MediaFolder) keeps this reactive to
+    // the filter above: if the filter changes while a folder is open, its
+    // contents update instead of showing a stale snapshot.
+    var currentFolderId by remember { mutableStateOf<String?>(null) }
+    val currentFolder = folders.find { it.bucketId == currentFolderId }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
@@ -79,11 +101,27 @@ fun GalleryApp() {
         selectedIds = emptySet()
     }
 
-    val displayedItems = currentFolder?.items ?: allMedia
+    val displayedItems = currentFolder?.items ?: filteredMedia
 
     fun toggleSelected(item: MediaItem) {
         selectedIds = if (item.id in selectedIds) selectedIds - item.id else selectedIds + item.id
         if (selectedIds.isEmpty()) selectionMode = false
+    }
+
+    // System back button/gesture: exit selection mode first if active,
+    // otherwise leave the open folder and return to the folders list —
+    // instead of the default behavior of closing the whole app.
+    BackHandler(enabled = selectionMode || currentFolderId != null) {
+        when {
+            selectionMode -> exitSelection()
+            currentFolderId != null -> currentFolderId = null
+        }
+    }
+
+    // Exiting selection mode when the user swipes to a different tab
+    // avoids a stale selection carrying over.
+    LaunchedEffect(tabPagerState.currentPage) {
+        exitSelection()
     }
 
     if (viewerIndex != null) {
@@ -130,27 +168,41 @@ fun GalleryApp() {
                 TopAppBar(
                     title = { Text(currentFolder?.name ?: "My Gallery") },
                     navigationIcon = {
-                        if (currentFolder != null) {
-                            IconButton(onClick = { currentFolder = null }) {
+                        if (currentFolderId != null) {
+                            IconButton(onClick = { currentFolderId = null }) {
                                 Icon(Icons.Filled.ArrowBack, contentDescription = "Back to folders")
                             }
+                        }
+                    },
+                    actions = {
+                        FilterDropdown(
+                            showImages = showImages,
+                            showVideos = showVideos,
+                            onToggleImages = { showImages = !showImages },
+                            onToggleVideos = { showVideos = !showVideos }
+                        )
+                        IconButton(onClick = onToggleTheme) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                                contentDescription = "Toggle theme"
+                            )
                         }
                     }
                 )
             }
         },
         bottomBar = {
-            if (currentFolder == null) {
+            if (currentFolderId == null) {
                 NavigationBar {
                     NavigationBarItem(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0; exitSelection() },
+                        selected = tabPagerState.currentPage == 0,
+                        onClick = { coroutineScope.launch { tabPagerState.animateScrollToPage(0) } },
                         icon = { Icon(Icons.Filled.Photo, contentDescription = null) },
                         label = { Text("All") }
                     )
                     NavigationBarItem(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1; exitSelection() },
+                        selected = tabPagerState.currentPage == 1,
+                        onClick = { coroutineScope.launch { tabPagerState.animateScrollToPage(1) } },
                         icon = { Icon(Icons.Filled.Folder, contentDescription = null) },
                         label = { Text("Folders") }
                     )
@@ -166,55 +218,87 @@ fun GalleryApp() {
             }
             currentFolder != null -> {
                 MediaGrid(
-                    items = currentFolder!!.items,
+                    items = currentFolder.items,
                     modifier = Modifier.padding(padding),
                     selectionMode = selectionMode,
                     selectedIds = selectedIds,
                     onItemClick = { index ->
-                        val item = currentFolder!!.items[index]
+                        val item = currentFolder.items[index]
                         if (selectionMode) toggleSelected(item)
                         else {
-                            viewerList = currentFolder!!.items
+                            viewerList = currentFolder.items
                             viewerIndex = index
                         }
                     },
                     onItemLongClick = { index ->
                         selectionMode = true
-                        toggleSelected(currentFolder!!.items[index])
+                        toggleSelected(currentFolder.items[index])
                     }
                 )
             }
-            selectedTab == 0 -> {
-                if (allMedia.isEmpty()) {
-                    EmptyState(modifier = Modifier.padding(padding))
-                } else {
-                    MediaGrid(
-                        items = allMedia,
-                        modifier = Modifier.padding(padding),
-                        selectionMode = selectionMode,
-                        selectedIds = selectedIds,
-                        onItemClick = { index ->
-                            val item = allMedia[index]
-                            if (selectionMode) toggleSelected(item)
-                            else {
-                                viewerList = allMedia
-                                viewerIndex = index
-                            }
-                        },
-                        onItemLongClick = { index ->
-                            selectionMode = true
-                            toggleSelected(allMedia[index])
+            else -> {
+                // Swipeable All / Folders tabs.
+                HorizontalPager(
+                    state = tabPagerState,
+                    modifier = Modifier.fillMaxSize().padding(padding)
+                ) { page ->
+                    if (page == 0) {
+                        if (filteredMedia.isEmpty()) {
+                            EmptyState()
+                        } else {
+                            MediaGrid(
+                                items = filteredMedia,
+                                selectionMode = selectionMode,
+                                selectedIds = selectedIds,
+                                onItemClick = { index ->
+                                    val item = filteredMedia[index]
+                                    if (selectionMode) toggleSelected(item)
+                                    else {
+                                        viewerList = filteredMedia
+                                        viewerIndex = index
+                                    }
+                                },
+                                onItemLongClick = { index ->
+                                    selectionMode = true
+                                    toggleSelected(filteredMedia[index])
+                                }
+                            )
                         }
-                    )
+                    } else {
+                        FolderGrid(
+                            folders = folders,
+                            onFolderClick = { folder -> currentFolderId = folder.bucketId }
+                        )
+                    }
                 }
             }
-            else -> {
-                FolderGrid(
-                    folders = folders,
-                    modifier = Modifier.padding(padding),
-                    onFolderClick = { folder -> currentFolder = folder }
-                )
-            }
+        }
+    }
+}
+
+@Composable
+private fun FilterDropdown(
+    showImages: Boolean,
+    showVideos: Boolean,
+    onToggleImages: () -> Unit,
+    onToggleVideos: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Filled.FilterList, contentDescription = "Filter by type")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Images") },
+                leadingIcon = { Checkbox(checked = showImages, onCheckedChange = null) },
+                onClick = onToggleImages
+            )
+            DropdownMenuItem(
+                text = { Text("Videos") },
+                leadingIcon = { Checkbox(checked = showVideos, onCheckedChange = null) },
+                onClick = onToggleVideos
+            )
         }
     }
 }

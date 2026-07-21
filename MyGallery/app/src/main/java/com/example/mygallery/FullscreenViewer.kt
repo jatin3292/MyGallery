@@ -1,6 +1,8 @@
 package com.example.mygallery
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -36,13 +38,12 @@ import kotlin.math.abs
 
 /**
  * Fullscreen, swipeable media viewer.
- * - Images: pinch to zoom, two-finger rotate, double-tap to zoom, pan while zoomed.
+ * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90° steps),
+ *   double-tap to zoom, pan while zoomed.
  * - Videos: inline playback via ExoPlayer.
  * - Swipe down anywhere (while not zoomed in) to close.
- * - Left/right swipe navigates between items, and keeps working because the
- *   per-image gesture handler only consumes touches when it needs to
- *   (multi-touch, or single-finger while already zoomed in) — otherwise it
- *   lets the drag pass through to the pager untouched.
+ * - System back button/gesture also closes the viewer.
+ * - Left/right swipe navigates between items.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -53,6 +54,8 @@ fun FullscreenViewer(
     onDelete: (MediaItem) -> Unit,
     onShare: (MediaItem) -> Unit
 ) {
+    BackHandler { onClose() }
+
     val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { mediaList.size })
 
     // Whether the currently visible page is zoomed in. While true, the
@@ -134,13 +137,23 @@ private fun ZoomableImagePage(
     onZoomChanged: (Boolean) -> Unit
 ) {
     var scale by remember { mutableStateOf(1f) }
-    var rotation by remember { mutableStateOf(0f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
 
-    fun resetTransform() {
+    // Rotation snaps to 90° steps instead of following the raw (jittery)
+    // two-finger rotation directly. rotationAccumulator tracks how far the
+    // fingers have twisted since the last snap; once it crosses 45°, we
+    // commit a full 90° turn and animate smoothly to it.
+    var committedRotation by remember { mutableStateOf(0f) }
+    var rotationAccumulator by remember { mutableStateOf(0f) }
+    val animatedRotation by animateFloatAsState(
+        targetValue = committedRotation,
+        animationSpec = tween(durationMillis = 220),
+        label = "rotation"
+    )
+
+    fun resetZoomAndPan() {
         scale = 1f
-        rotation = 0f
         offsetX = 0f
         offsetY = 0f
     }
@@ -159,11 +172,11 @@ private fun ZoomableImagePage(
                 .graphicsLayer(
                     scaleX = scale,
                     scaleY = scale,
-                    rotationZ = rotation,
+                    rotationZ = animatedRotation,
                     translationX = offsetX,
                     translationY = offsetY
                 )
-                // Pinch-zoom, two-finger rotate, pan-while-zoomed.
+                // Pinch-zoom, two-finger rotate (90° snapping), pan-while-zoomed.
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
                 // them and can swipe between images.
@@ -177,9 +190,14 @@ private fun ZoomableImagePage(
                             val panChange = event.calculatePan()
 
                             if (event.changes.size > 1) {
-                                // Two+ fingers: pinch zoom and rotate together.
+                                // Two+ fingers: pinch zoom, and accumulate
+                                // rotation toward the next 90° snap.
                                 scale = (scale * zoomChange).coerceIn(1f, 6f)
-                                rotation += rotationChange
+                                rotationAccumulator += rotationChange
+                                if (abs(rotationAccumulator) >= 45f) {
+                                    committedRotation += if (rotationAccumulator > 0) 90f else -90f
+                                    rotationAccumulator = 0f
+                                }
                                 if (scale > 1f) {
                                     offsetX += panChange.x
                                     offsetY += panChange.y
@@ -195,15 +213,16 @@ private fun ZoomableImagePage(
                             // pager handle it as a page swipe instead.
                         } while (event.changes.any { it.pressed })
 
-                        if (scale <= 1f) resetTransform()
+                        rotationAccumulator = 0f
+                        if (scale <= 1f) resetZoomAndPan()
                     }
                 }
-                // Double-tap to zoom in/out.
+                // Double-tap to zoom in/out (doesn't affect rotation).
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
                             if (scale > 1f) {
-                                resetTransform()
+                                resetZoomAndPan()
                             } else {
                                 scale = 3f
                             }
