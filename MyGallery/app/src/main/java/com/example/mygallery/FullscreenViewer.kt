@@ -3,6 +3,7 @@ package com.example.mygallery
 import android.view.GestureDetector
 import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -39,6 +40,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
@@ -175,9 +178,14 @@ private fun ZoomableImagePage(
     onZoomChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    var scale by remember { mutableStateOf(1f) }
-    var offsetX by remember { mutableStateOf(0f) }
-    var offsetY by remember { mutableStateOf(0f) }
+    val animScope = rememberCoroutineScope()
+
+    // Animatable (rather than plain state) so zoom/pan can either track
+    // fingers exactly during a pinch (snapTo, no easing lag) or animate
+    // smoothly to a target (animateTo, used for double-tap and reset).
+    val scale = remember(item.id) { Animatable(1f) }
+    val offsetX = remember(item.id) { Animatable(0f) }
+    val offsetY = remember(item.id) { Animatable(0f) }
 
     // Rotation snaps to 90° steps instead of following the raw (jittery)
     // two-finger rotation directly. rotationAccumulator tracks how far the
@@ -192,14 +200,16 @@ private fun ZoomableImagePage(
         label = "rotation"
     )
 
-    fun resetZoomAndPan() {
-        scale = 1f
-        offsetX = 0f
-        offsetY = 0f
+    suspend fun animateResetZoomAndPan() {
+        coroutineScope {
+            launch { scale.animateTo(1f, tween(220)) }
+            launch { offsetX.animateTo(0f, tween(220)) }
+            launch { offsetY.animateTo(0f, tween(220)) }
+        }
     }
 
-    LaunchedEffect(scale, isCurrentPage) {
-        onZoomChanged(isCurrentPage && scale > 1f)
+    LaunchedEffect(scale.value, isCurrentPage) {
+        onZoomChanged(isCurrentPage && scale.value > 1f)
     }
 
     LaunchedEffect(rotateTrigger) {
@@ -219,11 +229,11 @@ private fun ZoomableImagePage(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
+                    scaleX = scale.value,
+                    scaleY = scale.value,
                     rotationZ = animatedRotation,
-                    translationX = offsetX,
-                    translationY = offsetY
+                    translationX = offsetX.value,
+                    translationY = offsetY.value
                 )
                 // Pinch-zoom, two-finger rotate (90° snapping), pan-while-zoomed.
                 // Single-finger drags at 1x scale are deliberately left
@@ -239,23 +249,25 @@ private fun ZoomableImagePage(
                             val panChange = event.calculatePan()
 
                             if (event.changes.size > 1) {
-                                // Two+ fingers: pinch zoom, and accumulate
-                                // rotation toward the next 90° snap.
-                                scale = (scale * zoomChange).coerceIn(1f, 6f)
+                                // Two+ fingers: pinch zoom (tracked exactly,
+                                // no animation lag), accumulate rotation
+                                // toward the next 90° snap.
+                                val newScale = (scale.value * zoomChange).coerceIn(1f, 6f)
+                                scale.snapTo(newScale)
                                 rotationAccumulator += rotationChange
                                 if (abs(rotationAccumulator) >= 45f) {
                                     committedRotation += if (rotationAccumulator > 0) 90f else -90f
                                     rotationAccumulator = 0f
                                 }
-                                if (scale > 1f) {
-                                    offsetX += panChange.x
-                                    offsetY += panChange.y
+                                if (newScale > 1f) {
+                                    offsetX.snapTo(offsetX.value + panChange.x)
+                                    offsetY.snapTo(offsetY.value + panChange.y)
                                 }
                                 event.changes.forEach { it.consume() }
-                            } else if (scale > 1f) {
+                            } else if (scale.value > 1f) {
                                 // One finger, already zoomed in: pan around.
-                                offsetX += panChange.x
-                                offsetY += panChange.y
+                                offsetX.snapTo(offsetX.value + panChange.x)
+                                offsetY.snapTo(offsetY.value + panChange.y)
                                 event.changes.forEach { it.consume() }
                             }
                             // One finger, not zoomed: don't consume — lets the
@@ -263,17 +275,19 @@ private fun ZoomableImagePage(
                         } while (event.changes.any { it.pressed })
 
                         rotationAccumulator = 0f
-                        if (scale <= 1f) resetZoomAndPan()
+                        if (scale.value <= 1f) animateResetZoomAndPan()
                     }
                 }
-                // Double-tap to zoom in/out (doesn't affect rotation).
+                // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
-                            if (scale > 1f) {
-                                resetZoomAndPan()
-                            } else {
-                                scale = 3f
+                            animScope.launch {
+                                if (scale.value > 1f) {
+                                    animateResetZoomAndPan()
+                                } else {
+                                    scale.animateTo(3f, tween(250))
+                                }
                             }
                         }
                     )
