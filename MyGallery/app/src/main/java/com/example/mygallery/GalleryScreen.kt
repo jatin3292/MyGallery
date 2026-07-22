@@ -133,7 +133,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                 MediaActions.delete(context, listOf(item), deleteLauncher)
                 viewerIndex = null
             },
-            onShare = { item -> MediaActions.share(context, listOf(item)) }
+            onShare = { item -> MediaActions.share(context, listOf(item)) },
             onEdited = { reloadTrigger++ }
         )
         return
