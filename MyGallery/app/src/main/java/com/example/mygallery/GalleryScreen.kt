@@ -134,6 +134,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                 viewerIndex = null
             },
             onShare = { item -> MediaActions.share(context, listOf(item)) }
+            onEdited = { reloadTrigger++ }
         )
         return
     }

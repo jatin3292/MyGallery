@@ -1,12 +1,18 @@
 package com.example.mygallery
 
 import android.app.RecoverableSecurityException
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.IntentSenderRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Handles deleting and sharing media items, accounting for the different
@@ -80,5 +86,36 @@ object MediaActions {
                 }
             }
         }
+    }
+
+    /**
+     * Saves a bitmap (e.g. a crop result) as a brand new image in the gallery,
+     * leaving the original untouched. Returns the new item's Uri, or null on failure.
+     */
+    suspend fun saveEditedCopy(context: Context, bitmap: Bitmap): Uri? = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val filename = "IMG_${System.currentTimeMillis()}_edited.jpg"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/MyGallery")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return@withContext null
+
+        resolver.openOutputStream(uri)?.use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
+
+        uri
     }
 }

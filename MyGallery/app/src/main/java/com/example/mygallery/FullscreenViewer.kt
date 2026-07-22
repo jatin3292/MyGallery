@@ -1,5 +1,7 @@
 package com.example.mygallery
 
+import android.view.GestureDetector
+import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -18,6 +20,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,13 +38,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import kotlin.math.abs
 
 /**
  * Fullscreen, swipeable media viewer.
- * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90° steps),
- *   double-tap to zoom, pan while zoomed.
- * - Videos: inline playback via ExoPlayer.
+ * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90° steps,
+ *   also triggerable via the rotate button), double-tap to zoom, pan while
+ *   zoomed, basic crop editor.
+ * - Videos: inline playback via ExoPlayer, auto-pauses when swiped away from,
+ *   long-press to manually pause/resume.
  * - Swipe down anywhere (while not zoomed in) to close.
  * - System back button/gesture also closes the viewer.
  * - Left/right swipe navigates between items.
@@ -52,8 +59,23 @@ fun FullscreenViewer(
     startIndex: Int,
     onClose: () -> Unit,
     onDelete: (MediaItem) -> Unit,
-    onShare: (MediaItem) -> Unit
+    onShare: (MediaItem) -> Unit,
+    onEdited: () -> Unit
 ) {
+    var editingItem by remember { mutableStateOf<MediaItem?>(null) }
+
+    if (editingItem != null) {
+        EditScreen(
+            item = editingItem!!,
+            onClose = { editingItem = null },
+            onSaved = {
+                editingItem = null
+                onEdited()
+            }
+        )
+        return
+    }
+
     BackHandler { onClose() }
 
     val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { mediaList.size })
@@ -62,9 +84,15 @@ fun FullscreenViewer(
     // swipe-down-to-close gesture is disabled so it doesn't fight with panning.
     var currentPageZoomed by remember { mutableStateOf(false) }
 
+    // Bumped by the rotate button; each page watches this and only rotates
+    // itself if it's the currently visible page.
+    var rotateTrigger by remember { mutableStateOf(0) }
+
     var dragOffsetY by remember { mutableStateOf(0f) }
     val animatedOffsetY by animateFloatAsState(targetValue = dragOffsetY, label = "dragOffsetY")
     val backgroundAlpha = 1f - (abs(dragOffsetY) / 1200f).coerceIn(0f, 0.6f)
+
+    val currentItem = mediaList[pagerState.currentPage]
 
     Box(
         modifier = Modifier
@@ -97,17 +125,18 @@ fun FullscreenViewer(
             val item = mediaList[page]
             val isCurrentPage = page == pagerState.currentPage
             if (item.isVideo) {
-                VideoPage(item = item)
+                VideoPage(item = item, isCurrentPage = isCurrentPage)
             } else {
                 ZoomableImagePage(
                     item = item,
                     isCurrentPage = isCurrentPage,
+                    rotateTrigger = rotateTrigger,
                     onZoomChanged = { zoomed -> if (isCurrentPage) currentPageZoomed = zoomed }
                 )
             }
         }
 
-        // Top overlay bar: back, share, delete.
+        // Top overlay bar: back, rotate, edit, share, delete.
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -119,10 +148,18 @@ fun FullscreenViewer(
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             Row {
-                IconButton(onClick = { onShare(mediaList[pagerState.currentPage]) }) {
+                if (!currentItem.isVideo) {
+                    IconButton(onClick = { rotateTrigger++ }) {
+                        Icon(Icons.Filled.RotateRight, contentDescription = "Rotate", tint = Color.White)
+                    }
+                    IconButton(onClick = { editingItem = currentItem }) {
+                        Icon(Icons.Filled.Edit, contentDescription = "Edit / crop", tint = Color.White)
+                    }
+                }
+                IconButton(onClick = { onShare(currentItem) }) {
                     Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White)
                 }
-                IconButton(onClick = { onDelete(mediaList[pagerState.currentPage]) }) {
+                IconButton(onClick = { onDelete(currentItem) }) {
                     Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color.White)
                 }
             }
@@ -134,8 +171,10 @@ fun FullscreenViewer(
 private fun ZoomableImagePage(
     item: MediaItem,
     isCurrentPage: Boolean,
+    rotateTrigger: Int,
     onZoomChanged: (Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
@@ -143,12 +182,13 @@ private fun ZoomableImagePage(
     // Rotation snaps to 90° steps instead of following the raw (jittery)
     // two-finger rotation directly. rotationAccumulator tracks how far the
     // fingers have twisted since the last snap; once it crosses 45°, we
-    // commit a full 90° turn and animate smoothly to it.
+    // commit a full 90° turn and animate smoothly to it. The rotate button
+    // (rotateTrigger) commits a 90° turn the same way.
     var committedRotation by remember { mutableStateOf(0f) }
     var rotationAccumulator by remember { mutableStateOf(0f) }
     val animatedRotation by animateFloatAsState(
         targetValue = committedRotation,
-        animationSpec = tween(durationMillis = 220),
+        animationSpec = tween(durationMillis = 250),
         label = "rotation"
     )
 
@@ -162,9 +202,18 @@ private fun ZoomableImagePage(
         onZoomChanged(isCurrentPage && scale > 1f)
     }
 
+    LaunchedEffect(rotateTrigger) {
+        if (isCurrentPage && rotateTrigger > 0) {
+            committedRotation += 90f
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AsyncImage(
-            model = item.uri,
+            model = ImageRequest.Builder(context)
+                .data(item.uri)
+                .crossfade(200)
+                .build(),
             contentDescription = item.displayName,
             contentScale = ContentScale.Fit,
             modifier = Modifier
@@ -234,13 +283,20 @@ private fun ZoomableImagePage(
 }
 
 @Composable
-private fun VideoPage(item: MediaItem) {
+private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
     val context = LocalContext.current
-    val exoPlayer = remember {
+    val exoPlayer = remember(item.id) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(androidx.media3.common.MediaItem.fromUri(item.uri))
             prepare()
         }
+    }
+
+    // Auto-pause when this page is swiped away from, auto-resume when it
+    // becomes the visible page again — prevents multiple videos playing
+    // (and their audio overlapping) at once as you swipe through the pager.
+    LaunchedEffect(isCurrentPage) {
+        if (isCurrentPage) exoPlayer.play() else exoPlayer.pause()
     }
 
     DisposableEffect(item.id) {
@@ -248,10 +304,21 @@ private fun VideoPage(item: MediaItem) {
     }
 
     AndroidView(
-        factory = {
-            PlayerView(context).apply {
+        factory = { ctx ->
+            val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onLongPress(e: MotionEvent) {
+                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                }
+            })
+            PlayerView(ctx).apply {
                 player = exoPlayer
                 useController = true
+                setOnTouchListener { _, event ->
+                    gestureDetector.onTouchEvent(event)
+                    // Return false so normal tap handling (show/hide controls)
+                    // still happens in addition to our long-press detection.
+                    false
+                }
             }
         },
         modifier = Modifier.fillMaxSize()
