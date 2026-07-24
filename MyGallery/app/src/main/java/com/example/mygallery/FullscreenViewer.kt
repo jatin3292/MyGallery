@@ -323,7 +323,7 @@ private fun ZoomableImagePage(
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
                 // them and can swipe between images.
-                .pointerInput(Unit) {
+               .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         do {
@@ -337,21 +337,25 @@ private fun ZoomableImagePage(
                                 // no animation lag), accumulate rotation
                                 // toward the next 90 degree snap.
                                 val newScale = (scale.value * zoomChange).coerceIn(1f, 6f)
-                                scale.snapTo(newScale)
+                                animScope.launch { scale.snapTo(newScale) }
                                 rotationAccumulator += rotationChange
                                 if (abs(rotationAccumulator) >= 45f) {
                                     committedRotation += if (rotationAccumulator > 0) 90f else -90f
                                     rotationAccumulator = 0f
                                 }
                                 if (newScale > 1f) {
-                                    offsetX.snapTo(offsetX.value + panChange.x)
-                                    offsetY.snapTo(offsetY.value + panChange.y)
+                                    val targetX = offsetX.value + panChange.x
+                                    val targetY = offsetY.value + panChange.y
+                                    animScope.launch { offsetX.snapTo(targetX) }
+                                    animScope.launch { offsetY.snapTo(targetY) }
                                 }
                                 event.changes.forEach { it.consume() }
                             } else if (scale.value > 1f) {
                                 // One finger, already zoomed in: pan around.
-                                offsetX.snapTo(offsetX.value + panChange.x)
-                                offsetY.snapTo(offsetY.value + panChange.y)
+                                val targetX = offsetX.value + panChange.x
+                                val targetY = offsetY.value + panChange.y
+                                animScope.launch { offsetX.snapTo(targetX) }
+                                animScope.launch { offsetY.snapTo(targetY) }
                                 event.changes.forEach { it.consume() }
                             }
                             // One finger, not zoomed: don't consume — lets the
@@ -359,9 +363,12 @@ private fun ZoomableImagePage(
                         } while (event.changes.any { it.pressed })
 
                         rotationAccumulator = 0f
-                        if (scale.value <= 1f) animateResetZoomAndPan()
+                        if (scale.value <= 1f) {
+                            animScope.launch { animateResetZoomAndPan() }
+                        }
                     }
                 }
+                // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
                 // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
                 .pointerInput(Unit) {
                     detectTapGestures(
