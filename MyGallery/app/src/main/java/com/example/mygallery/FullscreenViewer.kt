@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
@@ -15,17 +16,24 @@ import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,7 +42,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -46,14 +56,16 @@ import kotlin.math.abs
 
 /**
  * Fullscreen, swipeable media viewer.
- * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90° steps,
- *   also triggerable via the rotate button), double-tap to zoom, pan while
- *   zoomed, basic crop editor.
+ * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90 degree
+ *   steps, also triggerable via the rotate button), double-tap to zoom, pan
+ *   while zoomed, basic crop editor.
  * - Videos: inline playback via ExoPlayer, auto-pauses when swiped away from,
  *   long-press to manually pause/resume.
  * - Swipe down anywhere (while not zoomed in) to close.
  * - System back button/gesture also closes the viewer.
  * - Left/right swipe navigates between items.
+ * - Shuffle button jumps to a random item in the current list.
+ * - Star icon toggles favorite; info icon shows file details.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -63,7 +75,9 @@ fun FullscreenViewer(
     onClose: () -> Unit,
     onDelete: (MediaItem) -> Unit,
     onShare: (MediaItem) -> Unit,
-    onEdited: () -> Unit
+    onEdited: () -> Unit,
+    isFavorite: (MediaItem) -> Boolean,
+    onToggleFavorite: (MediaItem) -> Unit
 ) {
     var editingItem by remember { mutableStateOf<MediaItem?>(null) }
 
@@ -82,6 +96,7 @@ fun FullscreenViewer(
     BackHandler { onClose() }
 
     val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { mediaList.size })
+    val viewerScope = rememberCoroutineScope()
 
     // Whether the currently visible page is zoomed in. While true, the
     // swipe-down-to-close gesture is disabled so it doesn't fight with panning.
@@ -90,6 +105,8 @@ fun FullscreenViewer(
     // Bumped by the rotate button; each page watches this and only rotates
     // itself if it's the currently visible page.
     var rotateTrigger by remember { mutableStateOf(0) }
+
+    var showInfo by remember { mutableStateOf(false) }
 
     var dragOffsetY by remember { mutableStateOf(0f) }
     val animatedOffsetY by animateFloatAsState(targetValue = dragOffsetY, label = "dragOffsetY")
@@ -139,7 +156,7 @@ fun FullscreenViewer(
             }
         }
 
-        // Top overlay bar: back, rotate, edit, share, delete.
+        // Top overlay bar: back, shuffle, favorite, info, rotate, edit, share, delete.
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -151,6 +168,24 @@ fun FullscreenViewer(
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             Row {
+                IconButton(onClick = {
+                    if (mediaList.size > 1) {
+                        val randomPage = (mediaList.indices - pagerState.currentPage).random()
+                        viewerScope.launch { pagerState.scrollToPage(randomPage) }
+                    }
+                }) {
+                    Icon(Icons.Filled.Shuffle, contentDescription = "Random item", tint = Color.White)
+                }
+                IconButton(onClick = { onToggleFavorite(currentItem) }) {
+                    Icon(
+                        imageVector = if (isFavorite(currentItem)) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = "Toggle favorite",
+                        tint = if (isFavorite(currentItem)) Color(0xFFFFC107) else Color.White
+                    )
+                }
+                IconButton(onClick = { showInfo = true }) {
+                    Icon(Icons.Filled.Info, contentDescription = "Info", tint = Color.White)
+                }
                 if (!currentItem.isVideo) {
                     IconButton(onClick = { rotateTrigger++ }) {
                         Icon(Icons.Filled.RotateRight, contentDescription = "Rotate", tint = Color.White)
@@ -167,6 +202,55 @@ fun FullscreenViewer(
                 }
             }
         }
+
+        if (showInfo) {
+            InfoPanel(item = currentItem, onDismiss = { showInfo = false })
+        }
+    }
+}
+
+/** Bottom-sheet-style overlay showing basic file details for the current item. */
+@Composable
+private fun InfoPanel(item: MediaItem, onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) { onDismiss() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1E1E1E), shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                .padding(20.dp)
+        ) {
+            Text(
+                text = item.displayName,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            InfoRow("Folder", item.bucketName)
+            InfoRow("Date", formatDate(item.dateAdded))
+            InfoRow("Resolution", "${item.width} \u00d7 ${item.height}")
+            InfoRow("Size", formatFileSize(item.sizeBytes))
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = Color.Gray, fontSize = 14.sp)
+        Text(value, color = Color.White, fontSize = 14.sp)
     }
 }
 
@@ -187,11 +271,11 @@ private fun ZoomableImagePage(
     val offsetX = remember(item.id) { Animatable(0f) }
     val offsetY = remember(item.id) { Animatable(0f) }
 
-    // Rotation snaps to 90° steps instead of following the raw (jittery)
-    // two-finger rotation directly. rotationAccumulator tracks how far the
-    // fingers have twisted since the last snap; once it crosses 45°, we
-    // commit a full 90° turn and animate smoothly to it. The rotate button
-    // (rotateTrigger) commits a 90° turn the same way.
+    // Rotation snaps to 90 degree steps instead of following the raw
+    // (jittery) two-finger rotation directly. rotationAccumulator tracks how
+    // far the fingers have twisted since the last snap; once it crosses 45
+    // degrees, we commit a full 90 degree turn and animate smoothly to it.
+    // The rotate button (rotateTrigger) commits a 90 degree turn the same way.
     var committedRotation by remember { mutableStateOf(0f) }
     var rotationAccumulator by remember { mutableStateOf(0f) }
     val animatedRotation by animateFloatAsState(
@@ -235,7 +319,7 @@ private fun ZoomableImagePage(
                     translationX = offsetX.value,
                     translationY = offsetY.value
                 )
-                // Pinch-zoom, two-finger rotate (90° snapping), pan-while-zoomed.
+                // Pinch-zoom, two-finger rotate (90 degree snapping), pan-while-zoomed.
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
                 // them and can swipe between images.
@@ -251,7 +335,7 @@ private fun ZoomableImagePage(
                             if (event.changes.size > 1) {
                                 // Two+ fingers: pinch zoom (tracked exactly,
                                 // no animation lag), accumulate rotation
-                                // toward the next 90° snap.
+                                // toward the next 90 degree snap.
                                 val newScale = (scale.value * zoomChange).coerceIn(1f, 6f)
                                 scale.snapTo(newScale)
                                 rotationAccumulator += rotationChange
