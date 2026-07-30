@@ -32,6 +32,7 @@ data class MediaFolder(
     val bucketId: String,
     val name: String,
     val coverUri: Uri,
+    val coverIsVideo: Boolean,
     val itemCount: Int,
     val items: List<MediaItem>
 )
@@ -165,6 +166,7 @@ fun List<MediaItem>.toFolders(): List<MediaFolder> {
                 bucketId = bucketId,
                 name = sorted.first().bucketName,
                 coverUri = sorted.first().uri,
+                coverIsVideo = sorted.first().isVideo,
                 itemCount = sorted.size,
                 items = sorted
             )

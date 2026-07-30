@@ -43,7 +43,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import kotlinx.coroutines.launch
+
+/**
+ * Builds a Coil request for a thumbnail. For video items, this also asks
+ * Coil to decode a frame ~1 second in (via the video-aware image loader),
+ * since a plain Uri request would otherwise produce a blank thumbnail.
+ */
+@Composable
+private fun rememberThumbnailRequest(uri: android.net.Uri, isVideo: Boolean): ImageRequest {
+    val context = LocalContext.current
+    return remember(uri, isVideo) {
+        ImageRequest.Builder(context)
+            .data(uri)
+            .crossfade(150)
+            .apply { if (isVideo) videoFrameMillis(1000) }
+            .build()
+    }
+}
 
 /**
  * Root composable owning all top-level app state: the media list, the
@@ -526,7 +545,8 @@ private fun ThumbnailCell(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         AsyncImage(
-            model = item.uri,
+            model = rememberThumbnailRequest(item.uri, item.isVideo),
+            imageLoader = AppImageLoader.get(LocalContext.current),
             contentDescription = item.displayName,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -590,7 +610,8 @@ private fun FolderGrid(
                     .clickable { onFolderClick(folder) }
             ) {
                 AsyncImage(
-                    model = folder.coverUri,
+                    model = rememberThumbnailRequest(folder.coverUri, folder.coverIsVideo),
+                    imageLoader = AppImageLoader.get(LocalContext.current),
                     contentDescription = folder.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -645,7 +666,8 @@ private fun TrashGrid(
                     .clickable { onItemClick(item) }
             ) {
                 AsyncImage(
-                    model = item.uri,
+                    model = rememberThumbnailRequest(item.uri, item.isVideo),
+                    imageLoader = AppImageLoader.get(LocalContext.current),
                     contentDescription = item.displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize().alpha(0.6f)

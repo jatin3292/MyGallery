@@ -31,12 +31,16 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -95,8 +99,19 @@ fun FullscreenViewer(
 
     BackHandler { onClose() }
 
-    val pagerState = rememberPagerState(initialPage = startIndex, pageCount = { mediaList.size })
     val viewerScope = rememberCoroutineScope()
+
+    // Shuffle Mode: when off, pages map 1:1 to mediaList. When on, pages map
+    // through a shuffled permutation instead, so every swipe (forward or
+    // back) moves through a randomized order rather than sequential order.
+    var shuffleMode by remember { mutableStateOf(false) }
+    var shuffledIndices by remember { mutableStateOf(mediaList.indices.toList()) }
+
+    val pagerState = rememberPagerState(initialPage = startIndex) {
+        if (shuffleMode) shuffledIndices.size else mediaList.size
+    }
+
+    fun mediaIndexForPage(page: Int): Int = if (shuffleMode) shuffledIndices[page] else page
 
     // Whether the currently visible page is zoomed in. While true, the
     // swipe-down-to-close gesture is disabled so it doesn't fight with panning.
@@ -112,7 +127,7 @@ fun FullscreenViewer(
     val animatedOffsetY by animateFloatAsState(targetValue = dragOffsetY, label = "dragOffsetY")
     val backgroundAlpha = 1f - (abs(dragOffsetY) / 1200f).coerceIn(0f, 0.6f)
 
-    val currentItem = mediaList[pagerState.currentPage]
+    val currentItem = mediaList[mediaIndexForPage(pagerState.currentPage)]
 
     Box(
         modifier = Modifier
@@ -142,7 +157,7 @@ fun FullscreenViewer(
                 .fillMaxSize()
                 .graphicsLayer { translationY = animatedOffsetY }
         ) { page ->
-            val item = mediaList[page]
+            val item = mediaList[mediaIndexForPage(page)]
             val isCurrentPage = page == pagerState.currentPage
             if (item.isVideo) {
                 VideoPage(item = item, isCurrentPage = isCurrentPage)
@@ -156,6 +171,21 @@ fun FullscreenViewer(
             }
         }
 
+        // Subtle gradient scrim behind the top icons for legibility over any
+        // photo, rather than a flat tint — matches the layered look modern
+        // photo viewers use.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(120.dp)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)
+                    )
+                )
+        )
+
         // Top overlay bar: back, shuffle, favorite, info, rotate, edit, share, delete.
         Row(
             modifier = Modifier
@@ -167,15 +197,37 @@ fun FullscreenViewer(
             IconButton(onClick = onClose) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Row {
-                IconButton(onClick = {
-                    if (mediaList.size > 1) {
-                        val randomPage = (mediaList.indices - pagerState.currentPage).random()
-                        viewerScope.launch { pagerState.scrollToPage(randomPage) }
-                    }
-                }) {
-                    Icon(Icons.Filled.Shuffle, contentDescription = "Random item", tint = Color.White)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledIconToggleButton(
+                    checked = shuffleMode,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            // Turning on: shuffle everything except the
+                            // current item, which stays first so nothing
+                            // jumps the moment shuffle is enabled.
+                            val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
+                            val rest = mediaList.indices.filter { it != currentMediaIndex }.shuffled()
+                            shuffledIndices = listOf(currentMediaIndex) + rest
+                            shuffleMode = true
+                            viewerScope.launch { pagerState.scrollToPage(0) }
+                        } else {
+                            // Turning off: jump back to this item's normal
+                            // sequential position.
+                            val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
+                            shuffleMode = false
+                            viewerScope.launch { pagerState.scrollToPage(currentMediaIndex) }
+                        }
+                    },
+                    colors = IconButtonDefaults.filledIconToggleButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.15f),
+                        contentColor = Color.White,
+                        checkedContainerColor = MaterialTheme.colorScheme.primary,
+                        checkedContentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle mode")
                 }
+                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(onClick = { onToggleFavorite(currentItem) }) {
                     Icon(
                         imageVector = if (isFavorite(currentItem)) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -323,7 +375,7 @@ private fun ZoomableImagePage(
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
                 // them and can swipe between images.
-               .pointerInput(Unit) {
+                .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         do {
@@ -368,7 +420,6 @@ private fun ZoomableImagePage(
                         }
                     }
                 }
-                // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
                 // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
                 .pointerInput(Unit) {
                     detectTapGestures(

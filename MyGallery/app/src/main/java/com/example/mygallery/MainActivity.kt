@@ -14,6 +14,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,9 +30,16 @@ class MainActivity : ComponentActivity() {
             val prefs = remember { context.getSharedPreferences("gallery_prefs", Context.MODE_PRIVATE) }
             var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("dark_theme", true)) }
 
-            MaterialTheme(
-                colorScheme = if (isDarkTheme) darkColorScheme() else lightColorScheme()
-            ) {
+            // Material You: on Android 12+, the whole app's palette adapts to
+            // the device wallpaper's colors, matching the current system
+            // design language. Older versions fall back to a static scheme.
+            val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (isDarkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            } else {
+                if (isDarkTheme) darkColorScheme() else lightColorScheme()
+            }
+
+            MaterialTheme(colorScheme = colorScheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     GalleryPermissionGate(
                         isDarkTheme = isDarkTheme,
