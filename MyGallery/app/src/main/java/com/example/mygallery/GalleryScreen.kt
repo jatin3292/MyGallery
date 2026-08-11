@@ -9,8 +9,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -178,6 +180,15 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
     var currentFolderId by remember { mutableStateOf<String?>(null) }
     val currentFolder = folders.find { it.bucketId == currentFolderId }
 
+    // Grid scroll positions, hoisted up here (above the viewer's early
+    // return below) so they survive opening and closing the fullscreen
+    // viewer — otherwise the whole grid tree is removed from composition
+    // while the viewer is open and its scroll position is forgotten,
+    // resetting to the top every time you come back.
+    val allGridState = rememberLazyGridState()
+    val favoritesGridState = rememberLazyGridState()
+    val folderGridState = remember(currentFolderId) { LazyGridState() }
+
     var selectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
 
@@ -328,6 +339,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                 MediaGrid(
                     items = currentFolder.items,
                     modifier = Modifier.padding(padding),
+                    gridState = folderGridState,
                     selectionMode = selectionMode,
                     selectedIds = selectedIds,
                     favoriteIds = favoriteIds,
@@ -358,6 +370,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                             } else {
                                 MediaGrid(
                                     items = filteredMedia,
+                                    gridState = allGridState,
                                     selectionMode = selectionMode,
                                     selectedIds = selectedIds,
                                     favoriteIds = favoriteIds,
@@ -382,6 +395,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                             } else {
                                 MediaGrid(
                                     items = favoritesMedia,
+                                    gridState = favoritesGridState,
                                     selectionMode = selectionMode,
                                     selectedIds = selectedIds,
                                     favoriteIds = favoriteIds,
@@ -501,6 +515,7 @@ private fun EmptyState(modifier: Modifier = Modifier, message: String = "No phot
 private fun MediaGrid(
     items: List<MediaItem>,
     modifier: Modifier = Modifier,
+    gridState: LazyGridState,
     selectionMode: Boolean,
     selectedIds: Set<Long>,
     favoriteIds: Set<Long>,
@@ -509,6 +524,7 @@ private fun MediaGrid(
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
+        state = gridState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
