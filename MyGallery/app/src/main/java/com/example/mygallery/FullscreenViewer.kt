@@ -2,6 +2,7 @@ package com.example.mygallery
 
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
@@ -63,8 +64,9 @@ import kotlin.math.abs
  * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90 degree
  *   steps, also triggerable via the rotate button), double-tap to zoom, pan
  *   while zoomed, basic crop editor.
- * - Videos: inline playback via ExoPlayer, auto-pauses when swiped away from,
- *   long-press to manually pause/resume.
+ * - Videos: play cleanly with no controls visible; tap pauses and reveals
+ *   controls; long-press quick-toggles play/pause without showing controls.
+ *   Auto-pauses when swiped away from.
  * - Swipe down anywhere (while not zoomed in) to close.
  * - System back button/gesture also closes the viewer.
  * - Left/right swipe navigates between items.
@@ -378,6 +380,13 @@ private fun ZoomableImagePage(
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
+                        // Only a gesture that actually involved a second
+                        // finger (real pinch/rotate) should trigger a
+                        // post-gesture snap-back. Without this flag, a plain
+                        // single-finger TAP would also fire the reset —
+                        // which raced against and canceled out the
+                        // double-tap-to-zoom animation below.
+                        var involvedMultiTouch = false
                         do {
                             val event = awaitPointerEvent()
                             val zoomChange = event.calculateZoom()
@@ -385,6 +394,7 @@ private fun ZoomableImagePage(
                             val panChange = event.calculatePan()
 
                             if (event.changes.size > 1) {
+                                involvedMultiTouch = true
                                 // Two+ fingers: pinch zoom (tracked exactly,
                                 // no animation lag), accumulate rotation
                                 // toward the next 90 degree snap.
@@ -415,7 +425,7 @@ private fun ZoomableImagePage(
                         } while (event.changes.any { it.pressed })
 
                         rotationAccumulator = 0f
-                        if (scale.value <= 1f) {
+                        if (involvedMultiTouch && scale.value <= 1f) {
                             animScope.launch { animateResetZoomAndPan() }
                         }
                     }
@@ -438,6 +448,13 @@ private fun ZoomableImagePage(
     }
 }
 
+/**
+ * Plays cleanly with the controller hidden by default. Tapping the video
+ * pauses playback and reveals the controller (seek bar, play/pause, etc.);
+ * once shown, normal touches pass through to the controller itself so its
+ * buttons keep working. Long-press quick-toggles play/pause without ever
+ * showing the controller.
+ */
 @Composable
 private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
     val context = LocalContext.current
@@ -447,6 +464,8 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
             prepare()
         }
     }
+
+    var controlsVisible by remember(item.id) { mutableStateOf(false) }
 
     // Auto-pause when this page is swiped away from, auto-resume when it
     // becomes the visible page again — prevents multiple videos playing
@@ -461,21 +480,39 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
 
     AndroidView(
         factory = { ctx ->
+            val playerView = PlayerView(ctx).apply {
+                player = exoPlayer
+                useController = true
+                controllerAutoShow = false
+                hideController()
+                setControllerVisibilityListener(
+                    PlayerView.ControllerVisibilityListener { visibility ->
+                        controlsVisible = visibility == View.VISIBLE
+                    }
+                )
+            }
             val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    exoPlayer.pause()
+                    playerView.showController()
+                    return true
+                }
+
                 override fun onLongPress(e: MotionEvent) {
                     if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                 }
             })
-            PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = true
-                setOnTouchListener { _, event ->
+            playerView.setOnTouchListener { _, event ->
+                if (!controlsVisible) {
                     gestureDetector.onTouchEvent(event)
-                    // Return false so normal tap handling (show/hide controls)
-                    // still happens in addition to our long-press detection.
+                    true
+                } else {
                     false
                 }
             }
+            playerView
         },
         modifier = Modifier.fillMaxSize()
     )
