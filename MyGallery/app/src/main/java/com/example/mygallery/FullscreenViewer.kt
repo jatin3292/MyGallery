@@ -2,7 +2,6 @@ package com.example.mygallery
 
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
@@ -449,11 +448,12 @@ private fun ZoomableImagePage(
 }
 
 /**
- * Plays cleanly with the controller hidden by default. Tapping the video
- * pauses playback and reveals the controller (seek bar, play/pause, etc.);
- * once shown, normal touches pass through to the controller itself so its
- * buttons keep working. Long-press quick-toggles play/pause without ever
- * showing the controller.
+ * Plays cleanly with the controller hidden by default. Tapping toggles
+ * between two states: pause + show controller, and resume + hide
+ * controller — a plain on/off toggle, entirely handled here rather than
+ * relying on the native player's own tap-to-hide behavior (which only
+ * hid the controller without resuming playback). Long-press quick-toggles
+ * play/pause without ever showing the controller.
  */
 @Composable
 private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
@@ -464,8 +464,6 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
             prepare()
         }
     }
-
-    var controlsVisible by remember(item.id) { mutableStateOf(false) }
 
     // Auto-pause when this page is swiped away from, auto-resume when it
     // becomes the visible page again — prevents multiple videos playing
@@ -485,18 +483,18 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
                 useController = true
                 controllerAutoShow = false
                 hideController()
-                setControllerVisibilityListener(
-                    PlayerView.ControllerVisibilityListener { visibility ->
-                        controlsVisible = visibility == View.VISIBLE
-                    }
-                )
             }
             val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent): Boolean = true
 
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    exoPlayer.pause()
-                    playerView.showController()
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                        playerView.showController()
+                    } else {
+                        exoPlayer.play()
+                        playerView.hideController()
+                    }
                     return true
                 }
 
@@ -504,13 +502,13 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
                     if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                 }
             })
+            // Always handle taps ourselves so the toggle is fully
+            // predictable (this does mean the controller's own seek bar
+            // isn't draggable via touch — only tap-to-toggle and long-press
+            // are wired up. Say the word if you'd like scrubbing added back).
             playerView.setOnTouchListener { _, event ->
-                if (!controlsVisible) {
-                    gestureDetector.onTouchEvent(event)
-                    true
-                } else {
-                    false
-                }
+                gestureDetector.onTouchEvent(event)
+                true
             }
             playerView
         },
