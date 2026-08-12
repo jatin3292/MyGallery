@@ -3,7 +3,7 @@ package com.example.mygallery
 import android.view.GestureDetector
 import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -35,6 +35,7 @@ import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -50,11 +51,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -317,12 +320,16 @@ private fun ZoomableImagePage(
     val context = LocalContext.current
     val animScope = rememberCoroutineScope()
 
-    // Animatable (rather than plain state) so zoom/pan can either track
-    // fingers exactly during a pinch (snapTo, no easing lag) or animate
-    // smoothly to a target (animateTo, used for double-tap and reset).
-    val scale = remember(item.id) { Animatable(1f) }
-    val offsetX = remember(item.id) { Animatable(0f) }
-    val offsetY = remember(item.id) { Animatable(0f) }
+    // Plain (non-animated) state for live pinch/pan tracking — updated
+    // synchronously as touches come in, so panning stays perfectly attached
+    // to your finger with zero lag. Programmatic transitions (double-tap,
+    // post-pinch reset) instead drive these same values smoothly via the
+    // animate() coroutine below, rather than via Animatable.snapTo, which
+    // required launching a separate coroutine per touch event and was
+    // introducing a small but noticeable delay during panning.
+    var scale by remember(item.id) { mutableStateOf(1f) }
+    var offsetX by remember(item.id) { mutableStateOf(0f) }
+    var offsetY by remember(item.id) { mutableStateOf(0f) }
 
     // Rotation snaps to 90 degree steps instead of following the raw
     // (jittery) two-finger rotation directly. rotationAccumulator tracks how
@@ -339,14 +346,14 @@ private fun ZoomableImagePage(
 
     suspend fun animateResetZoomAndPan() {
         coroutineScope {
-            launch { scale.animateTo(1f, tween(220)) }
-            launch { offsetX.animateTo(0f, tween(220)) }
-            launch { offsetY.animateTo(0f, tween(220)) }
+            launch { animate(scale, 1f, animationSpec = tween(220)) { value, _ -> scale = value } }
+            launch { animate(offsetX, 0f, animationSpec = tween(220)) { value, _ -> offsetX = value } }
+            launch { animate(offsetY, 0f, animationSpec = tween(220)) { value, _ -> offsetY = value } }
         }
     }
 
-    LaunchedEffect(scale.value, isCurrentPage) {
-        onZoomChanged(isCurrentPage && scale.value > 1f)
+    LaunchedEffect(scale, isCurrentPage) {
+        onZoomChanged(isCurrentPage && scale > 1f)
     }
 
     LaunchedEffect(rotateTrigger) {
@@ -366,16 +373,18 @@ private fun ZoomableImagePage(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer(
-                    scaleX = scale.value,
-                    scaleY = scale.value,
+                    scaleX = scale,
+                    scaleY = scale,
                     rotationZ = animatedRotation,
-                    translationX = offsetX.value,
-                    translationY = offsetY.value
+                    translationX = offsetX,
+                    translationY = offsetY
                 )
                 // Pinch-zoom, two-finger rotate (90 degree snapping), pan-while-zoomed.
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
-                // them and can swipe between images.
+                // them and can swipe between images. All updates here are
+                // plain synchronous assignments — safe inside this gesture
+                // scope, and immediate (no coroutine dispatch lag).
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
@@ -394,29 +403,23 @@ private fun ZoomableImagePage(
 
                             if (event.changes.size > 1) {
                                 involvedMultiTouch = true
-                                // Two+ fingers: pinch zoom (tracked exactly,
-                                // no animation lag), accumulate rotation
-                                // toward the next 90 degree snap.
-                                val newScale = (scale.value * zoomChange).coerceIn(1f, 6f)
-                                animScope.launch { scale.snapTo(newScale) }
+                                // Two+ fingers: pinch zoom, accumulate
+                                // rotation toward the next 90 degree snap.
+                                scale = (scale * zoomChange).coerceIn(1f, 6f)
                                 rotationAccumulator += rotationChange
                                 if (abs(rotationAccumulator) >= 45f) {
                                     committedRotation += if (rotationAccumulator > 0) 90f else -90f
                                     rotationAccumulator = 0f
                                 }
-                                if (newScale > 1f) {
-                                    val targetX = offsetX.value + panChange.x
-                                    val targetY = offsetY.value + panChange.y
-                                    animScope.launch { offsetX.snapTo(targetX) }
-                                    animScope.launch { offsetY.snapTo(targetY) }
+                                if (scale > 1f) {
+                                    offsetX += panChange.x
+                                    offsetY += panChange.y
                                 }
                                 event.changes.forEach { it.consume() }
-                            } else if (scale.value > 1f) {
+                            } else if (scale > 1f) {
                                 // One finger, already zoomed in: pan around.
-                                val targetX = offsetX.value + panChange.x
-                                val targetY = offsetY.value + panChange.y
-                                animScope.launch { offsetX.snapTo(targetX) }
-                                animScope.launch { offsetY.snapTo(targetY) }
+                                offsetX += panChange.x
+                                offsetY += panChange.y
                                 event.changes.forEach { it.consume() }
                             }
                             // One finger, not zoomed: don't consume — lets the
@@ -424,7 +427,7 @@ private fun ZoomableImagePage(
                         } while (event.changes.any { it.pressed })
 
                         rotationAccumulator = 0f
-                        if (involvedMultiTouch && scale.value <= 1f) {
+                        if (involvedMultiTouch && scale <= 1f) {
                             animScope.launch { animateResetZoomAndPan() }
                         }
                     }
@@ -434,10 +437,10 @@ private fun ZoomableImagePage(
                     detectTapGestures(
                         onDoubleTap = {
                             animScope.launch {
-                                if (scale.value > 1f) {
+                                if (scale > 1f) {
                                     animateResetZoomAndPan()
                                 } else {
-                                    scale.animateTo(3f, tween(250))
+                                    animate(scale, 3f, animationSpec = tween(250)) { value, _ -> scale = value }
                                 }
                             }
                         }
@@ -453,7 +456,9 @@ private fun ZoomableImagePage(
  * controller — a plain on/off toggle, entirely handled here rather than
  * relying on the native player's own tap-to-hide behavior (which only
  * hid the controller without resuming playback). Long-press quick-toggles
- * play/pause without ever showing the controller.
+ * play/pause without ever showing the controller. Loops indefinitely
+ * instead of stopping at the end. A slim progress bar stays visible at
+ * the bottom at all times, independent of the tap-toggled controller.
  */
 @Composable
 private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
@@ -461,6 +466,7 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
     val exoPlayer = remember(item.id) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(androidx.media3.common.MediaItem.fromUri(item.uri))
+            repeatMode = Player.REPEAT_MODE_ONE
             prepare()
         }
     }
@@ -472,46 +478,73 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
         if (isCurrentPage) exoPlayer.play() else exoPlayer.pause()
     }
 
+    // Polls playback position for the always-visible progress bar below.
+    var progress by remember(item.id) { mutableStateOf(0f) }
+    LaunchedEffect(item.id) {
+        while (true) {
+            val duration = exoPlayer.duration
+            if (duration > 0) {
+                progress = (exoPlayer.currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            }
+            delay(300)
+        }
+    }
+
     DisposableEffect(item.id) {
         onDispose { exoPlayer.release() }
     }
 
-    AndroidView(
-        factory = { ctx ->
-            val playerView = PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = true
-                controllerAutoShow = false
-                hideController()
-            }
-            val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
-                override fun onDown(e: MotionEvent): Boolean = true
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = { ctx ->
+                val playerView = PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = true
+                    controllerAutoShow = false
+                    hideController()
+                }
+                val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDown(e: MotionEvent): Boolean = true
 
-                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    if (exoPlayer.isPlaying) {
-                        exoPlayer.pause()
-                        playerView.showController()
-                    } else {
-                        exoPlayer.play()
-                        playerView.hideController()
+                    override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                        if (exoPlayer.isPlaying) {
+                            exoPlayer.pause()
+                            playerView.showController()
+                        } else {
+                            exoPlayer.play()
+                            playerView.hideController()
+                        }
+                        return true
                     }
-                    return true
-                }
 
-                override fun onLongPress(e: MotionEvent) {
-                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    override fun onLongPress(e: MotionEvent) {
+                        if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    }
+                })
+                // Always handle taps ourselves so the toggle is fully
+                // predictable (this does mean the controller's own seek bar
+                // isn't draggable via touch — only tap-to-toggle and
+                // long-press are wired up. Say the word if you'd like
+                // scrubbing added back).
+                playerView.setOnTouchListener { _, event ->
+                    gestureDetector.onTouchEvent(event)
+                    true
                 }
-            })
-            // Always handle taps ourselves so the toggle is fully
-            // predictable (this does mean the controller's own seek bar
-            // isn't draggable via touch — only tap-to-toggle and long-press
-            // are wired up. Say the word if you'd like scrubbing added back).
-            playerView.setOnTouchListener { _, event ->
-                gestureDetector.onTouchEvent(event)
-                true
-            }
-            playerView
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+                playerView
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Always-visible progress bar, independent of the tap-toggled
+        // play/pause controller above.
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(3.dp),
+            color = Color.White,
+            trackColor = Color.White.copy(alpha = 0.3f)
+        )
+    }
 }
