@@ -147,17 +147,24 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
         }
     }
 
-    // Media type filter (Images / Videos) and sort order, applied everywhere below.
+    // Media type filter (Images / Videos), hidden-folder visibility, and
+    // sort order, applied everywhere below. "Hidden" here means folders
+    // whose name starts with a dot (e.g. WhatsApp's ".Statuses") — true
+    // OS-level (.nomedia) hidden folders are excluded by Android itself
+    // before any app ever sees them, so this only affects dot-prefixed
+    // folders that MediaStore does still return.
     var showImages by remember { mutableStateOf(true) }
     var showVideos by remember { mutableStateOf(true) }
+    var showHiddenFolders by remember { mutableStateOf(false) }
     var sortOrder by remember { mutableStateOf(SortOrder.NEWEST_FIRST) }
 
     val visibleMedia = remember(allMedia, trashedMap) {
         allMedia.filter { it.id !in trashedMap.keys }
     }
-    val filteredMedia = remember(visibleMedia, showImages, showVideos, sortOrder) {
+    val filteredMedia = remember(visibleMedia, showImages, showVideos, showHiddenFolders, sortOrder) {
         visibleMedia
             .filter { (it.isVideo && showVideos) || (!it.isVideo && showImages) }
+            .filter { showHiddenFolders || !it.bucketName.startsWith(".") }
             .sortedByOrder(sortOrder)
     }
     val favoritesMedia = remember(filteredMedia, favoriteIds) {
@@ -196,6 +203,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
 
     var trashActionItem by remember { mutableStateOf<MediaItem?>(null) }
+    var pendingDeleteItems by remember { mutableStateOf<List<MediaItem>?>(null) }
 
     fun exitSelection() {
         selectionMode = false
@@ -230,15 +238,23 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
             mediaList = viewerList,
             startIndex = viewerIndex!!,
             onClose = { viewerIndex = null },
-            onDelete = { item ->
-                moveToTrash(listOf(item))
-                viewerIndex = null
-            },
+            onDelete = { item -> pendingDeleteItems = listOf(item) },
             onShare = { item -> MediaActions.share(context, listOf(item)) },
             onEdited = { reloadTrigger++ },
             isFavorite = { item -> item.id in favoriteIds },
             onToggleFavorite = { item -> toggleFavorite(item) }
         )
+        if (pendingDeleteItems != null) {
+            DeleteConfirmDialog(
+                items = pendingDeleteItems!!,
+                onConfirm = {
+                    moveToTrash(pendingDeleteItems!!)
+                    pendingDeleteItems = null
+                    viewerIndex = null
+                },
+                onCancel = { pendingDeleteItems = null }
+            )
+        }
         return
     }
 
@@ -260,9 +276,7 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                             Icon(Icons.Filled.Share, contentDescription = "Share selected")
                         }
                         IconButton(onClick = {
-                            val items = displayedItems.filter { it.id in selectedIds }
-                            moveToTrash(items)
-                            exitSelection()
+                            pendingDeleteItems = displayedItems.filter { it.id in selectedIds }
                         }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Move selected to trash")
                         }
@@ -284,8 +298,10 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
                             FilterDropdown(
                                 showImages = showImages,
                                 showVideos = showVideos,
+                                showHiddenFolders = showHiddenFolders,
                                 onToggleImages = { showImages = !showImages },
-                                onToggleVideos = { showVideos = !showVideos }
+                                onToggleVideos = { showVideos = !showVideos },
+                                onToggleHiddenFolders = { showHiddenFolders = !showHiddenFolders }
                             )
                         }
                         IconButton(onClick = onToggleTheme) {
@@ -452,14 +468,44 @@ fun GalleryApp(isDarkTheme: Boolean, onToggleTheme: () -> Unit) {
             }
         )
     }
+
+    if (pendingDeleteItems != null) {
+        DeleteConfirmDialog(
+            items = pendingDeleteItems!!,
+            onConfirm = {
+                moveToTrash(pendingDeleteItems!!)
+                pendingDeleteItems = null
+                exitSelection()
+            },
+            onCancel = { pendingDeleteItems = null }
+        )
+    }
+}
+
+/** Confirmation shown before moving item(s) to Trash. */
+@Composable
+private fun DeleteConfirmDialog(items: List<MediaItem>, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(if (items.size == 1) "Delete this item?" else "Delete ${items.size} items?") },
+        text = { Text("Moved to Trash — you can restore within 30 days.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Delete") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
 private fun FilterDropdown(
     showImages: Boolean,
     showVideos: Boolean,
+    showHiddenFolders: Boolean,
     onToggleImages: () -> Unit,
-    onToggleVideos: () -> Unit
+    onToggleVideos: () -> Unit,
+    onToggleHiddenFolders: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -476,6 +522,11 @@ private fun FilterDropdown(
                 text = { Text("Videos") },
                 leadingIcon = { Checkbox(checked = showVideos, onCheckedChange = null) },
                 onClick = onToggleVideos
+            )
+            DropdownMenuItem(
+                text = { Text("Show hidden folders") },
+                leadingIcon = { Checkbox(checked = showHiddenFolders, onCheckedChange = null) },
+                onClick = onToggleHiddenFolders
             )
         }
     }

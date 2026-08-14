@@ -1,7 +1,5 @@
 package com.example.mygallery
 
-import android.view.GestureDetector
-import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
@@ -35,8 +33,8 @@ import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -65,15 +63,18 @@ import kotlin.math.abs
  * Fullscreen, swipeable media viewer.
  * - Images: pinch to zoom, two-finger rotate (snaps smoothly to 90 degree
  *   steps, also triggerable via the rotate button), double-tap to zoom, pan
- *   while zoomed, basic crop editor.
- * - Videos: play cleanly with no controls visible; tap pauses and reveals
- *   controls; long-press quick-toggles play/pause without showing controls.
- *   Auto-pauses when swiped away from.
+ *   while zoomed, basic crop editor. Single tap toggles the icon row;
+ *   long-press shows file info.
+ * - Videos: single tap toggles the icon row + a draggable progress bar
+ *   (both stay shown/hidden until tapped again — no auto-hide timeout);
+ *   double tap toggles play/pause; long-press shows file info. Loops
+ *   indefinitely instead of stopping at the end, and auto-pauses when
+ *   swiped away from.
  * - Swipe down anywhere (while not zoomed in) to close.
  * - System back button/gesture also closes the viewer.
  * - Left/right swipe navigates between items.
  * - Shuffle button jumps to a random item in the current list.
- * - Star icon toggles favorite; info icon shows file details.
+ * - Star icon toggles favorite; info icon (or long-press) shows file details.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -127,6 +128,15 @@ fun FullscreenViewer(
 
     var showInfo by remember { mutableStateOf(false) }
 
+    // Shared toggle for the top icon row AND (on video pages) the progress
+    // bar — a single tap on either an image or a video toggles this, and it
+    // stays as-is (no auto-hide timeout) until tapped again. Resets to
+    // visible whenever you swipe to a different item.
+    var controlsVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(pagerState.currentPage) {
+        controlsVisible = true
+    }
+
     var dragOffsetY by remember { mutableStateOf(0f) }
     val animatedOffsetY by animateFloatAsState(targetValue = dragOffsetY, label = "dragOffsetY")
     val backgroundAlpha = 1f - (abs(dragOffsetY) / 1200f).coerceIn(0f, 0.6f)
@@ -164,97 +174,106 @@ fun FullscreenViewer(
             val item = mediaList[mediaIndexForPage(page)]
             val isCurrentPage = page == pagerState.currentPage
             if (item.isVideo) {
-                VideoPage(item = item, isCurrentPage = isCurrentPage)
+                VideoPage(
+                    item = item,
+                    isCurrentPage = isCurrentPage,
+                    controlsVisible = controlsVisible,
+                    onToggleControls = { controlsVisible = !controlsVisible },
+                    onShowInfo = { showInfo = true }
+                )
             } else {
                 ZoomableImagePage(
                     item = item,
                     isCurrentPage = isCurrentPage,
                     rotateTrigger = rotateTrigger,
-                    onZoomChanged = { zoomed -> if (isCurrentPage) currentPageZoomed = zoomed }
+                    onZoomChanged = { zoomed -> if (isCurrentPage) currentPageZoomed = zoomed },
+                    onToggleControls = { controlsVisible = !controlsVisible },
+                    onShowInfo = { showInfo = true }
                 )
             }
         }
 
-        // Subtle gradient scrim behind the top icons for legibility over any
-        // photo, rather than a flat tint — matches the layered look modern
-        // photo viewers use.
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(120.dp)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)
+        if (controlsVisible) {
+            // Subtle gradient scrim behind the top icons for legibility over
+            // any photo, rather than a flat tint.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)
+                        )
                     )
-                )
-        )
+            )
 
-        // Top overlay bar: back, shuffle, favorite, info, rotate, edit, share, delete.
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            IconButton(onClick = onClose) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                FilledIconToggleButton(
-                    checked = shuffleMode,
-                    onCheckedChange = { checked ->
-                        if (checked) {
-                            // Turning on: shuffle everything except the
-                            // current item, which stays first so nothing
-                            // jumps the moment shuffle is enabled.
-                            val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
-                            val rest = mediaList.indices.filter { it != currentMediaIndex }.shuffled()
-                            shuffledIndices = listOf(currentMediaIndex) + rest
-                            shuffleMode = true
-                            viewerScope.launch { pagerState.scrollToPage(0) }
-                        } else {
-                            // Turning off: jump back to this item's normal
-                            // sequential position.
-                            val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
-                            shuffleMode = false
-                            viewerScope.launch { pagerState.scrollToPage(currentMediaIndex) }
+            // Top overlay bar: back, shuffle, favorite, info, rotate, edit, share, delete.
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilledIconToggleButton(
+                        checked = shuffleMode,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                // Turning on: shuffle everything except the
+                                // current item, which stays first so nothing
+                                // jumps the moment shuffle is enabled.
+                                val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
+                                val rest = mediaList.indices.filter { it != currentMediaIndex }.shuffled()
+                                shuffledIndices = listOf(currentMediaIndex) + rest
+                                shuffleMode = true
+                                viewerScope.launch { pagerState.scrollToPage(0) }
+                            } else {
+                                // Turning off: jump back to this item's normal
+                                // sequential position.
+                                val currentMediaIndex = mediaIndexForPage(pagerState.currentPage)
+                                shuffleMode = false
+                                viewerScope.launch { pagerState.scrollToPage(currentMediaIndex) }
+                            }
+                        },
+                        colors = IconButtonDefaults.filledIconToggleButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.15f),
+                            contentColor = Color.White,
+                            checkedContainerColor = MaterialTheme.colorScheme.primary,
+                            checkedContentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle mode")
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(onClick = { onToggleFavorite(currentItem) }) {
+                        Icon(
+                            imageVector = if (isFavorite(currentItem)) Icons.Filled.Star else Icons.Filled.StarBorder,
+                            contentDescription = "Toggle favorite",
+                            tint = if (isFavorite(currentItem)) Color(0xFFFFC107) else Color.White
+                        )
+                    }
+                    IconButton(onClick = { showInfo = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "Info", tint = Color.White)
+                    }
+                    if (!currentItem.isVideo) {
+                        IconButton(onClick = { rotateTrigger++ }) {
+                            Icon(Icons.Filled.RotateRight, contentDescription = "Rotate", tint = Color.White)
                         }
-                    },
-                    colors = IconButtonDefaults.filledIconToggleButtonColors(
-                        containerColor = Color.White.copy(alpha = 0.15f),
-                        contentColor = Color.White,
-                        checkedContainerColor = MaterialTheme.colorScheme.primary,
-                        checkedContentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle mode")
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                IconButton(onClick = { onToggleFavorite(currentItem) }) {
-                    Icon(
-                        imageVector = if (isFavorite(currentItem)) Icons.Filled.Star else Icons.Filled.StarBorder,
-                        contentDescription = "Toggle favorite",
-                        tint = if (isFavorite(currentItem)) Color(0xFFFFC107) else Color.White
-                    )
-                }
-                IconButton(onClick = { showInfo = true }) {
-                    Icon(Icons.Filled.Info, contentDescription = "Info", tint = Color.White)
-                }
-                if (!currentItem.isVideo) {
-                    IconButton(onClick = { rotateTrigger++ }) {
-                        Icon(Icons.Filled.RotateRight, contentDescription = "Rotate", tint = Color.White)
+                        IconButton(onClick = { editingItem = currentItem }) {
+                            Icon(Icons.Filled.Edit, contentDescription = "Edit / crop", tint = Color.White)
+                        }
                     }
-                    IconButton(onClick = { editingItem = currentItem }) {
-                        Icon(Icons.Filled.Edit, contentDescription = "Edit / crop", tint = Color.White)
+                    IconButton(onClick = { onShare(currentItem) }) {
+                        Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White)
                     }
-                }
-                IconButton(onClick = { onShare(currentItem) }) {
-                    Icon(Icons.Filled.Share, contentDescription = "Share", tint = Color.White)
-                }
-                IconButton(onClick = { onDelete(currentItem) }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color.White)
+                    IconButton(onClick = { onDelete(currentItem) }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color.White)
+                    }
                 }
             }
         }
@@ -315,7 +334,9 @@ private fun ZoomableImagePage(
     item: MediaItem,
     isCurrentPage: Boolean,
     rotateTrigger: Int,
-    onZoomChanged: (Boolean) -> Unit
+    onZoomChanged: (Boolean) -> Unit,
+    onToggleControls: () -> Unit,
+    onShowInfo: () -> Unit
 ) {
     val context = LocalContext.current
     val animScope = rememberCoroutineScope()
@@ -324,18 +345,13 @@ private fun ZoomableImagePage(
     // synchronously as touches come in, so panning stays perfectly attached
     // to your finger with zero lag. Programmatic transitions (double-tap,
     // post-pinch reset) instead drive these same values smoothly via the
-    // animate() coroutine below, rather than via Animatable.snapTo, which
-    // required launching a separate coroutine per touch event and was
-    // introducing a small but noticeable delay during panning.
+    // animate() coroutine below.
     var scale by remember(item.id) { mutableStateOf(1f) }
     var offsetX by remember(item.id) { mutableStateOf(0f) }
     var offsetY by remember(item.id) { mutableStateOf(0f) }
 
     // Rotation snaps to 90 degree steps instead of following the raw
-    // (jittery) two-finger rotation directly. rotationAccumulator tracks how
-    // far the fingers have twisted since the last snap; once it crosses 45
-    // degrees, we commit a full 90 degree turn and animate smoothly to it.
-    // The rotate button (rotateTrigger) commits a 90 degree turn the same way.
+    // (jittery) two-finger rotation directly.
     var committedRotation by remember { mutableStateOf(0f) }
     var rotationAccumulator by remember { mutableStateOf(0f) }
     val animatedRotation by animateFloatAsState(
@@ -362,38 +378,39 @@ private fun ZoomableImagePage(
         }
     }
 
+    // Request built once per item, not rebuilt on every recomposition
+    // (touch-driven zoom/pan updates were otherwise rebuilding it every frame).
+    val imageRequest = remember(item.id) {
+        ImageRequest.Builder(context)
+            .data(item.uri)
+            .crossfade(200)
+            .build()
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AsyncImage(
-            model = ImageRequest.Builder(context)
-                .data(item.uri)
-                .crossfade(200)
-                .build(),
+            model = imageRequest,
             contentDescription = item.displayName,
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    rotationZ = animatedRotation,
-                    translationX = offsetX,
+                // Lambda form of graphicsLayer: updates the transform at
+                // draw time without triggering recomposition on every touch
+                // event, which is what made panning feel laggy before.
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    rotationZ = animatedRotation
+                    translationX = offsetX
                     translationY = offsetY
-                )
+                }
                 // Pinch-zoom, two-finger rotate (90 degree snapping), pan-while-zoomed.
                 // Single-finger drags at 1x scale are deliberately left
                 // UNCONSUMED so the parent HorizontalPager still receives
-                // them and can swipe between images. All updates here are
-                // plain synchronous assignments — safe inside this gesture
-                // scope, and immediate (no coroutine dispatch lag).
+                // them and can swipe between images.
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
-                        // Only a gesture that actually involved a second
-                        // finger (real pinch/rotate) should trigger a
-                        // post-gesture snap-back. Without this flag, a plain
-                        // single-finger TAP would also fire the reset —
-                        // which raced against and canceled out the
-                        // double-tap-to-zoom animation below.
                         var involvedMultiTouch = false
                         do {
                             val event = awaitPointerEvent()
@@ -403,8 +420,6 @@ private fun ZoomableImagePage(
 
                             if (event.changes.size > 1) {
                                 involvedMultiTouch = true
-                                // Two+ fingers: pinch zoom, accumulate
-                                // rotation toward the next 90 degree snap.
                                 scale = (scale * zoomChange).coerceIn(1f, 6f)
                                 rotationAccumulator += rotationChange
                                 if (abs(rotationAccumulator) >= 45f) {
@@ -417,13 +432,10 @@ private fun ZoomableImagePage(
                                 }
                                 event.changes.forEach { it.consume() }
                             } else if (scale > 1f) {
-                                // One finger, already zoomed in: pan around.
                                 offsetX += panChange.x
                                 offsetY += panChange.y
                                 event.changes.forEach { it.consume() }
                             }
-                            // One finger, not zoomed: don't consume — lets the
-                            // pager handle it as a page swipe instead.
                         } while (event.changes.any { it.pressed })
 
                         rotationAccumulator = 0f
@@ -432,9 +444,11 @@ private fun ZoomableImagePage(
                         }
                     }
                 }
-                // Double-tap to zoom in/out, smoothly (doesn't affect rotation).
+                // Single tap toggles the icon row; double-tap zooms in/out
+                // smoothly (doesn't affect rotation); long-press shows info.
                 .pointerInput(Unit) {
                     detectTapGestures(
+                        onTap = { onToggleControls() },
                         onDoubleTap = {
                             animScope.launch {
                                 if (scale > 1f) {
@@ -443,7 +457,8 @@ private fun ZoomableImagePage(
                                     animate(scale, 3f, animationSpec = tween(250)) { value, _ -> scale = value }
                                 }
                             }
-                        }
+                        },
+                        onLongPress = { onShowInfo() }
                     )
                 }
         )
@@ -451,17 +466,23 @@ private fun ZoomableImagePage(
 }
 
 /**
- * Plays cleanly with the controller hidden by default. Tapping toggles
- * between two states: pause + show controller, and resume + hide
- * controller — a plain on/off toggle, entirely handled here rather than
- * relying on the native player's own tap-to-hide behavior (which only
- * hid the controller without resuming playback). Long-press quick-toggles
- * play/pause without ever showing the controller. Loops indefinitely
- * instead of stopping at the end. A slim progress bar stays visible at
- * the bottom at all times, independent of the tap-toggled controller.
+ * Fully custom Compose controls (not the native PlayerView controller):
+ * - Single tap toggles [controlsVisible] (shared with the parent's icon row).
+ * - Double tap toggles play/pause.
+ * - Long-press shows file info.
+ * - A draggable Slider at the bottom scrubs playback, shown/hidden with the
+ *   rest of the controls.
+ * Loops indefinitely (REPEAT_MODE_ONE) instead of stopping at the end, and
+ * auto-pauses when swiped away from.
  */
 @Composable
-private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
+private fun VideoPage(
+    item: MediaItem,
+    isCurrentPage: Boolean,
+    controlsVisible: Boolean,
+    onToggleControls: () -> Unit,
+    onShowInfo: () -> Unit
+) {
     val context = LocalContext.current
     val exoPlayer = remember(item.id) {
         ExoPlayer.Builder(context).build().apply {
@@ -471,80 +492,74 @@ private fun VideoPage(item: MediaItem, isCurrentPage: Boolean) {
         }
     }
 
-    // Auto-pause when this page is swiped away from, auto-resume when it
-    // becomes the visible page again — prevents multiple videos playing
-    // (and their audio overlapping) at once as you swipe through the pager.
     LaunchedEffect(isCurrentPage) {
         if (isCurrentPage) exoPlayer.play() else exoPlayer.pause()
-    }
-
-    // Polls playback position for the always-visible progress bar below.
-    var progress by remember(item.id) { mutableStateOf(0f) }
-    LaunchedEffect(item.id) {
-        while (true) {
-            val duration = exoPlayer.duration
-            if (duration > 0) {
-                progress = (exoPlayer.currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-            }
-            delay(300)
-        }
     }
 
     DisposableEffect(item.id) {
         onDispose { exoPlayer.release() }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    var progress by remember(item.id) { mutableStateOf(0f) }
+    var durationMs by remember(item.id) { mutableStateOf(0L) }
+    var isScrubbing by remember { mutableStateOf(false) }
+
+    // Polls playback position for the progress bar, except while the user
+    // is actively dragging it (so the drag isn't fought by the poll).
+    LaunchedEffect(item.id) {
+        while (true) {
+            if (!isScrubbing) {
+                val duration = exoPlayer.duration
+                if (duration > 0) {
+                    durationMs = duration
+                    progress = (exoPlayer.currentPosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                }
+            }
+            delay(300)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(item.id) {
+                detectTapGestures(
+                    onTap = { onToggleControls() },
+                    onDoubleTap = {
+                        if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    },
+                    onLongPress = { onShowInfo() }
+                )
+            }
+    ) {
         AndroidView(
             factory = { ctx ->
-                val playerView = PlayerView(ctx).apply {
+                PlayerView(ctx).apply {
                     player = exoPlayer
-                    useController = true
-                    controllerAutoShow = false
-                    hideController()
+                    useController = false
                 }
-                val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
-                    override fun onDown(e: MotionEvent): Boolean = true
-
-                    override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                        if (exoPlayer.isPlaying) {
-                            exoPlayer.pause()
-                            playerView.showController()
-                        } else {
-                            exoPlayer.play()
-                            playerView.hideController()
-                        }
-                        return true
-                    }
-
-                    override fun onLongPress(e: MotionEvent) {
-                        if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                    }
-                })
-                // Always handle taps ourselves so the toggle is fully
-                // predictable (this does mean the controller's own seek bar
-                // isn't draggable via touch — only tap-to-toggle and
-                // long-press are wired up. Say the word if you'd like
-                // scrubbing added back).
-                playerView.setOnTouchListener { _, event ->
-                    gestureDetector.onTouchEvent(event)
-                    true
-                }
-                playerView
             },
             modifier = Modifier.fillMaxSize()
         )
 
-        // Always-visible progress bar, independent of the tap-toggled
-        // play/pause controller above.
-        LinearProgressIndicator(
-            progress = { progress },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(3.dp),
-            color = Color.White,
-            trackColor = Color.White.copy(alpha = 0.3f)
-        )
+        if (controlsVisible) {
+            Slider(
+                value = progress,
+                onValueChange = { newValue ->
+                    isScrubbing = true
+                    progress = newValue
+                },
+                onValueChangeFinished = {
+                    if (durationMs > 0) {
+                        exoPlayer.seekTo((progress * durationMs).toLong())
+                    }
+                    isScrubbing = false
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+        }
     }
 }
